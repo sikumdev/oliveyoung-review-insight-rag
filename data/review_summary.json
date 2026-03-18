@@ -1,0 +1,152 @@
+[
+  {
+    "goods_no": "A000000249451",
+    "goods_name": "[NEW]비오레 UV 아쿠아 리치 워터리 에센스 50g (단품/더블기획)",
+    "metadata": {
+      "stat_rating": 4.9,
+      "stat_review_count": 53,
+      "stat_skin_complex_pct": 0.43,
+      "stat_skin_dry_pct": 0.34,
+      "stat_skin_oily_pct": 0.23,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.91,
+      "mildness_score": 0.75
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000248619",
+    "goods_name": "[3월 올영픽/리뉴얼] 달바 내추럴 커버 베이지 선크림 50ml (라이트/웜)",
+    "metadata": {
+      "stat_rating": 4.7,
+      "stat_review_count": 120,
+      "stat_skin_complex_pct": 0.65,
+      "stat_skin_dry_pct": 0.29,
+      "stat_skin_oily_pct": 0.06,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.61,
+      "mildness_score": 0.67
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000232725",
+    "goods_name": "[3월 올영픽/생기톤업] 달바 핑크 톤업 선크림 듀오 기획 (50ml+50ml)",
+    "metadata": {
+      "stat_rating": 4.8,
+      "stat_review_count": 9418,
+      "stat_skin_dry_pct": 0.56,
+      "stat_skin_complex_pct": 0.4,
+      "stat_skin_oily_pct": 0.03,
+      "stat_skin_type_top": "건성",
+      "spreadability_score": 0.7,
+      "mildness_score": 0.69
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000219553",
+    "goods_name": "[3월 올영픽/화잘먹] 구달 맑은 어성초 진정 수분 선크림 50ml 1+1 기획 (+25ml 미니어처)",
+    "metadata": {
+      "stat_rating": 4.9,
+      "stat_review_count": 34254,
+      "stat_skin_complex_pct": 0.54,
+      "stat_skin_dry_pct": 0.36,
+      "stat_skin_oily_pct": 0.11,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.73,
+      "mildness_score": 0.74
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000246780",
+    "goods_name": "[3월올영픽/눈멍이스티커] 라운드랩 자작나무 수분 선크림 50ml 1+1 기획 (+스티커 모음) (눈멍이 콜라보)",
+    "metadata": {
+      "stat_rating": 4.8,
+      "stat_review_count": 44928,
+      "stat_skin_complex_pct": 0.49,
+      "stat_skin_dry_pct": 0.44,
+      "stat_skin_oily_pct": 0.07,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.78,
+      "mildness_score": 0.78
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000180162",
+    "goods_name": "[3월 올영픽/무기자차] 닥터지 그린 마일드 업 선 플러스 50ml 기획 (50ml+50ml+10ml)",
+    "metadata": {
+      "stat_rating": 4.8,
+      "stat_review_count": 25169,
+      "stat_skin_complex_pct": 0.59,
+      "stat_skin_dry_pct": 0.24,
+      "stat_skin_oily_pct": 0.18,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.57,
+      "mildness_score": 0.69
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000186166",
+    "goods_name": "[3월 올영픽/1+1] 라운드랩 자작나무 수분 톤업 선크림 50ml 1+1 기획",
+    "metadata": {
+      "stat_rating": 4.8,
+      "stat_review_count": 11382,
+      "stat_skin_complex_pct": 0.65,
+      "stat_skin_dry_pct": 0.3,
+      "stat_skin_oily_pct": 0.05,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.73,
+      "mildness_score": 0.75
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000232053",
+    "goods_name": "[3월 올영픽/파데프리/톤업선크림]체이싱래빗 올어바웃글로우 커버크림 35g기획(대왕퍼프)",
+    "metadata": {
+      "stat_rating": 4.7,
+      "stat_review_count": 7715,
+      "stat_skin_complex_pct": 0.57,
+      "stat_skin_dry_pct": 0.27,
+      "stat_skin_oily_pct": 0.16,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.67,
+      "mildness_score": 0.64
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000218862",
+    "goods_name": "[3월 올영픽/붉은기커버] 달바 그린 톤업 선크림 듀오 기획 (50ml+50ml)",
+    "metadata": {
+      "stat_rating": 4.7,
+      "stat_review_count": 1359,
+      "stat_skin_complex_pct": 0.52,
+      "stat_skin_dry_pct": 0.4,
+      "stat_skin_oily_pct": 0.07,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.58,
+      "mildness_score": 0.61
+    },
+    "error": null
+  },
+  {
+    "goods_no": "A000000204631",
+    "goods_name": "설화수 상백 선플루이드 50ml",
+    "metadata": {
+      "stat_rating": 4.5,
+      "stat_review_count": 21,
+      "stat_skin_complex_pct": 0.52,
+      "stat_skin_dry_pct": 0.38,
+      "stat_skin_oily_pct": 0.1,
+      "stat_skin_type_top": "복합성",
+      "spreadability_score": 0.57,
+      "mildness_score": 0.67
+    },
+    "error": null
+  }
+]
