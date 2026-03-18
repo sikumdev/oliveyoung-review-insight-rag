@@ -146,6 +146,14 @@ def crawl_all() -> list[dict]:
             meta = flatten_for_metadata(raw)
             data = raw.get("data", {})
 
+            # 리뷰 5개 미만 제품 제외 (크롤링 전제 조건)
+            # cmp_subgraph goods_no only fallback 후에도 충분한 리뷰 확보 보장
+            review_count = meta.get("stat_review_count") or 0
+            if review_count < 5:
+                print(f"  ⚠️  리뷰 {review_count}개 < 5 → 제외 (최소 기준 미달)")
+                results.append({"goods_no": goods_no, "error": f"review_count={review_count} < 5", "metadata": {}})
+                continue
+
             entry = {
                 "goods_no":   goods_no,
                 "goods_name": data.get("goodsName", ""),
