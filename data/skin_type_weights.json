@@ -1,0 +1,72 @@
+{
+  "지성": {
+    "fresh_pos": 0.2046,
+    "non_sticky_pos": 0.2016,
+    "moisture_pos": 0.1526,
+    "mild_pos": 0.1268,
+    "no_whitecast_pos": 0.0972,
+    "no_pilling_pos": 0.1122,
+    "longevity_pos": 0.061,
+    "no_eye_irritation_pos": 0.0439
+  },
+  "건성": {
+    "fresh_pos": 0.2044,
+    "non_sticky_pos": 0.1913,
+    "moisture_pos": 0.1867,
+    "mild_pos": 0.1195,
+    "no_whitecast_pos": 0.0968,
+    "no_pilling_pos": 0.1045,
+    "longevity_pos": 0.0515,
+    "no_eye_irritation_pos": 0.0453
+  },
+  "복합성": {
+    "fresh_pos": 0.2033,
+    "non_sticky_pos": 0.1956,
+    "moisture_pos": 0.1607,
+    "mild_pos": 0.1321,
+    "no_whitecast_pos": 0.1011,
+    "no_pilling_pos": 0.1131,
+    "longevity_pos": 0.0492,
+    "no_eye_irritation_pos": 0.0449
+  },
+  "민감성": {
+    "fresh_pos": 0.1906,
+    "non_sticky_pos": 0.1874,
+    "moisture_pos": 0.1665,
+    "mild_pos": 0.1543,
+    "no_whitecast_pos": 0.0898,
+    "no_pilling_pos": 0.1075,
+    "longevity_pos": 0.0516,
+    "no_eye_irritation_pos": 0.0524
+  },
+  "중성": {
+    "fresh_pos": 0.1879,
+    "non_sticky_pos": 0.1752,
+    "moisture_pos": 0.1902,
+    "mild_pos": 0.1521,
+    "no_whitecast_pos": 0.085,
+    "no_pilling_pos": 0.1171,
+    "longevity_pos": 0.05,
+    "no_eye_irritation_pos": 0.0425
+  },
+  "복합지성": {
+    "fresh_pos": 0.2394,
+    "non_sticky_pos": 0.2113,
+    "moisture_pos": 0.1268,
+    "mild_pos": 0.1127,
+    "no_whitecast_pos": 0.0986,
+    "no_pilling_pos": 0.1268,
+    "longevity_pos": 0.0282,
+    "no_eye_irritation_pos": 0.0563
+  },
+  "복합건성": {
+    "fresh_pos": 0.1912,
+    "non_sticky_pos": 0.1838,
+    "moisture_pos": 0.1838,
+    "mild_pos": 0.125,
+    "no_whitecast_pos": 0.0882,
+    "no_pilling_pos": 0.125,
+    "longevity_pos": 0.0368,
+    "no_eye_irritation_pos": 0.0662
+  }
+}
