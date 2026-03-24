@@ -158,7 +158,7 @@ if __name__ == "__main__":
         print(f"  → [{name[:30]}] 총 {len(reviews)}개\n")
         time.sleep(1)
 
-    output = BASE_DIR / "oliveyoung_sunscreen_reviews.json"
+    output = BASE_DIR / "oliveyoung_sunscreen_reviews_ex.json"
     with open(output, "w", encoding="utf-8") as f:
         json.dump(all_data, f, ensure_ascii=False, indent=2)
 
