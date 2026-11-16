@@ -218,3 +218,5 @@ __marimo__/
 
 
 .langgraph_api/
+# macOS
+.DS_Store
