@@ -16,6 +16,7 @@ cmp_subgraph: 두 개 이상 제품 비교 처리
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_core.documents import Document
 
 from graph.state import GraphState
@@ -42,8 +43,8 @@ logger = logging.getLogger(__name__)
 from graph.llm import get_llm
 
 MAX_DOCS_PER_PRODUCT = 15
-POS_PER_AXIS = 3
-NEG_PER_AXIS = 2
+POS_PER_AXIS = 2  # 속도 최적화: 3 → 2
+NEG_PER_AXIS = 2  # 정확도 유지 (부정 리뷰는 2개 유지)
 
 
 def run_compare_subgraph(state: GraphState) -> dict:
@@ -147,17 +148,16 @@ def run_compare_subgraph(state: GraphState) -> dict:
     # ── ④ 제품별 요약 생성 ───────────────────────────────────────────────────
     product_summaries: list[dict] = []
 
-    for product_name, pdocs in product_doc_map.items():
+    def _summarize_one(product_name: str, pdocs: list) -> dict:
+        """단일 제품 요약 — ThreadPoolExecutor로 병렬 실행"""
         if not pdocs:
-            product_summaries.append({
+            return {
                 "product_name": product_name,
                 "goods_no": resolve_goods_no(product_name) or "",
                 "axes": {ax: "리뷰 데이터 부족" for ax in axes},
                 "best_for": "",
                 "avoid_if": "",
-            })
-            continue
-
+            }
         docs_text = _format_docs(pdocs)
         try:
             summary: CompareSummaryResult = llm.with_structured_output(
@@ -173,16 +173,31 @@ def run_compare_subgraph(state: GraphState) -> dict:
             ])
             d = summary.model_dump()
             d["goods_no"] = resolve_goods_no(product_name) or ""
-            product_summaries.append(d)
+            return d
         except Exception as e:
             logger.warning("제품 요약 생성 실패(%s): %s", product_name, e)
-            product_summaries.append({
+            return {
                 "product_name": product_name,
                 "goods_no": resolve_goods_no(product_name) or "",
                 "axes": {ax: "요약 생성 실패" for ax in axes},
                 "best_for": "",
                 "avoid_if": "",
-            })
+            }
+
+    # 제품별 요약을 병렬로 실행 (달바 + 라운드랩 동시에)
+    items = list(product_doc_map.items())
+    with ThreadPoolExecutor(max_workers=min(len(items), 4)) as executor:
+        futures = {
+            executor.submit(_summarize_one, pname, pdocs): pname
+            for pname, pdocs in items
+        }
+        results_map = {}
+        for future in as_completed(futures):
+            pname = futures[future]
+            results_map[pname] = future.result()
+
+    # 원래 순서 유지
+    product_summaries = [results_map[pname] for pname, _ in items if pname in results_map]
 
     # ── ⑤ 축별 winner 판정 ───────────────────────────────────────────────────
     structured_compare_result: dict = {}
@@ -213,6 +228,9 @@ def run_compare_subgraph(state: GraphState) -> dict:
 # ── 헬퍼 ─────────────────────────────────────────────────────────────────────
 
 def _get_rewritten_question(state: GraphState) -> str:
+    """검색용 질문: rewritten_question 우선, 없으면 마지막 HumanMessage"""
+    if state.get("rewritten_question"):
+        return state["rewritten_question"]
     messages = state.get("messages", [])
     for msg in reversed(messages):
         if hasattr(msg, "type") and msg.type == "human":

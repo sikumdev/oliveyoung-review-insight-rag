@@ -26,7 +26,7 @@ from graph.prompts import (
 from graph.subgraphs.recommend import run_recommend_subgraph
 from graph.subgraphs.compare import run_compare_subgraph
 from graph.subgraphs.filter import run_filter_subgraph
-from rag.retriever import SKIN_TYPE_MAP, load_review_summary
+from rag.retriever import SKIN_TYPE_MAP, load_review_summary, load_product_stats
 
 # ── LLM 싱글톤 (graph/llm.py에서 관리) ──────────────────────────────────────
 from graph.llm import get_llm
@@ -37,7 +37,7 @@ from graph.llm import get_llm
 def intake_node(state: GraphState) -> dict:
     """
     질문 분류 + 피부타입/제품명/user_needs 추출
-    rewritten_question을 HumanMessage로 messages에 추가
+    rewritten_question은 state 필드에 저장 (messages에 넣으면 사용자 말풍선이 중복으로 보임)
 
     메시지 이력을 문자열 변환 없이 객체 그대로 언패킹해서 전달
     → role 구조 보존, 토큰 효율 향상
@@ -53,10 +53,16 @@ def intake_node(state: GraphState) -> dict:
         last_query_type=state.get("last_query_type", "") or "없음",
     )
 
+    # rewrite 루프로 재진입한 경우: 재작성된 질문을 이번 호출에만 덧붙임 (state에는 저장 안 함)
+    rewrite_hint = []
+    if state.get("rewrite_count", 0) > 0 and state.get("rewritten_question"):
+        rewrite_hint = [HumanMessage(content=state["rewritten_question"])]
+
     result: IntakeResult = structured_llm.invoke([
         SystemMessage(content=INTAKE_SYSTEM),
         SystemMessage(content=context_msg),  # 컨텍스트 주입
         *state["messages"][-6:],             # 대화 이력 그대로 언패킹
+        *rewrite_hint,
     ])
 
     # rewrite 루프 여부 판단:
@@ -88,7 +94,7 @@ def intake_node(state: GraphState) -> dict:
         "last_query_type":    state.get("query_type", ""),
         "rewrite_count":      state.get("rewrite_count", 0) if is_rewrite else 0,
         "review_insights":    {},
-        "messages": [HumanMessage(content=result.rewritten_question)],
+        "rewritten_question": result.rewritten_question,
     }
 
 
@@ -210,7 +216,7 @@ def review_insight_node(state: GraphState) -> dict:
     batch_text = ""
     for goods_no, pdocs in product_docs.items():
         reviews_text = "\n".join(
-            f"- {doc.page_content[:200]}" for doc in pdocs[:5]
+            f"- {doc.page_content[:120]}" for doc in pdocs[:4]
         )
         batch_text += f"\n[{goods_no}]\n{reviews_text}\n"
 
@@ -263,7 +269,8 @@ def generate_answer_node(state: GraphState) -> dict:
             skin_type=state.get("skin_type", ""),
             skin_tone=state.get("skin_tone", ""),
         )
-        raw_text     = _format_docs(state.get("retrieved_docs", []))
+        # 참고 리뷰는 insight가 있으면 생략 (토큰 절약)
+        raw_text     = "" if review_insights else _format_docs(state.get("retrieved_docs", []))
         docs_text    = f"[제품별 리뷰 인사이트]\n{insight_text}\n\n[참고 리뷰]\n{raw_text}"
     else:
         docs_text = _format_docs(state.get("retrieved_docs", []))
@@ -321,7 +328,7 @@ def rewrite_query_node(state: GraphState) -> dict:
     ])
     # rewrite → intake 재진입 시 skin_type/skin_tone/user_needs 보존
     return {
-        "messages":      [HumanMessage(content=response.content.strip())],
+        "rewritten_question": response.content.strip(),
         "rewrite_count": state.get("rewrite_count", 0) + 1,
         "skin_type":     state.get("skin_type", ""),
         "skin_tone":     state.get("skin_tone", ""),
@@ -344,7 +351,14 @@ def generate_fallback_node(state: GraphState) -> dict:
 # ── 헬퍼 함수 ────────────────────────────────────────────────────────────────
 
 def _get_last_human_message(state: GraphState) -> str:
-    """messages에서 마지막 HumanMessage 내용 반환"""
+    """
+    검색·생성에 쓸 질문 반환
+    1순위: intake/rewrite가 만든 rewritten_question
+    2순위: messages의 마지막 HumanMessage
+    (되묻기 답변 "건성이에요"가 마지막 메시지여도 원래 질문 기준으로 검색되도록)
+    """
+    if state.get("rewritten_question"):
+        return state["rewritten_question"]
     for msg in reversed(state["messages"]):
         if hasattr(msg, "type") and msg.type == "human":
             return msg.content
@@ -413,11 +427,9 @@ def _inject_mention_stats(answer: str, review_insights: dict) -> str:
     if not review_insights:
         return answer
     try:
-        from rag.retriever import STATS_PATH
-        import json as _json
-        if not STATS_PATH.exists():
+        ps = load_product_stats()
+        if not ps:
             return answer
-        ps = _json.loads(STATS_PATH.read_text(encoding="utf-8"))
         summary = load_review_summary()
         aspects_kr = {
             "non_sticky": "끈적임없음", "fresh": "산뜻함",
@@ -456,7 +468,9 @@ def _inject_mention_stats(answer: str, review_insights: dict) -> str:
                         "> " + bar + " **" + kr + "** " +
                         str(mention) + "건 언급 · 긍정률 " + str(int(pos*100)) + "%"
                     )
-                stats_block = "\n".join(stat_lines) + "\n"
+                # 줄 끝 공백 2칸 = 인용 블록 안 줄바꿈 유지
+                # 끝의 빈 줄 = 뒤따르는 표가 인용 블록에 흡수되지 않도록 분리
+                stats_block = "  \n".join(stat_lines) + "\n\n"
             # 메타 정보
             meta = item.get("metadata", {}) if isinstance(item, dict) else {}
             rating    = meta.get("stat_rating")
@@ -597,10 +611,8 @@ def _format_insights(insights: dict, skin_type: str = "", skin_tone: str = "") -
         # mention 수치 — RAG Grounding 근거 표시
         # product_stats에서 가장 많이 언급된 aspect top2 표시
         try:
-            from rag.retriever import STATS_PATH
-            import json as _json
-            if STATS_PATH.exists():
-                _ps = _json.loads(STATS_PATH.read_text(encoding="utf-8"))
+            _ps = load_product_stats()
+            if _ps:
                 _s  = _ps.get(goods_no, {})
                 _total = _s.get("total_reviews", 1) or 1
                 _aspects_kr = {

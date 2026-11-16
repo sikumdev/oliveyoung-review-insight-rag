@@ -109,6 +109,9 @@ def run_filter_subgraph(state: GraphState) -> dict:
 
 
 def _get_query(state: GraphState) -> str:
+    """검색용 질문: rewritten_question 우선, 없으면 마지막 HumanMessage"""
+    if state.get("rewritten_question"):
+        return state["rewritten_question"]
     for msg in reversed(state["messages"]):
         if hasattr(msg, "type") and msg.type == "human":
             return msg.content

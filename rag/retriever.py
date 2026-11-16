@@ -76,6 +76,10 @@ AXES_TO_ASPECT: dict[str, str | None] = {
     "백탁":    "no_whitecast",
     "지속력":  "longevity",
     "눈시림":  "no_eye_irritation",
+    "눈시림없음": "no_eye_irritation",
+    "밀림":    "no_pilling",
+    "밀림없음": "no_pilling",
+    "백탁없음": "no_whitecast",
     "향":      None,
 }
 
@@ -109,7 +113,19 @@ def get_query_embedding(query: str) -> list[float]:
     return get_embeddings().embed_query(query)
 
 _SKIN_WEIGHTS_CACHE: dict | None = None
-_REVIEW_SUMMARY_CACHE: dict | None = None  # goods_no → metadata dict
+_REVIEW_SUMMARY_CACHE: dict | None = None
+_PRODUCT_STATS_CACHE:  dict | None = None
+
+
+def load_product_stats() -> dict:
+    """product_stats.json 로드 후 캐싱"""
+    global _PRODUCT_STATS_CACHE
+    if _PRODUCT_STATS_CACHE is None:
+        if STATS_PATH.exists():
+            _PRODUCT_STATS_CACHE = json.loads(STATS_PATH.read_text(encoding="utf-8"))
+        else:
+            _PRODUCT_STATS_CACHE = {}
+    return _PRODUCT_STATS_CACHE  # goods_no → metadata dict
 
 _SKIN_WEIGHTS_DEFAULT = {
     "지성":    {"non_sticky_pos": 0.35, "fresh_pos": 0.30, "mild_pos": 0.20, "moisture_pos": 0.15},
@@ -159,8 +175,11 @@ def calculate_weights(user_needs: list[str], skin_type: str, defaults: dict) -> 
     skin_defaults = defaults.get(skin_type, defaults.get("복합성", {}))
     if not user_needs:
         return skin_defaults
-    base     = {k: v * 0.4 for k, v in skin_defaults.items()}
-    explicit = 0.6 / len(user_needs)
+    # 사용자가 직접 말한 니즈 0.85 : 피부타입 기본 가중치 0.15
+    # (0.4:0.6일 때는 8개 속성에 고르게 분산된 기본 가중치 때문에
+    #  모든 속성에서 상위권인 '올라운더' 제품이 니즈와 무관하게 1위를 독식)
+    base     = {k: v * 0.15 for k, v in skin_defaults.items()}
+    explicit = 0.85 / len(user_needs)
     for need in user_needs:
         col = NEEDS_TO_STAT.get(need)
         if col:
@@ -240,6 +259,55 @@ def resolve_goods_nos(product_name: str, limit: int = 3) -> list[str]:
     except Exception:
         return []
 
+ASPECT_POS_COLS = [
+    "fresh_pos", "non_sticky_pos", "moisture_pos", "mild_pos",
+    "no_whitecast_pos", "no_pilling_pos", "longevity_pos", "no_eye_irritation_pos",
+]
+# 베이지안 평활화 강도: 언급 수가 이 값보다 적으면 긍정률이 평균 쪽으로 크게 당겨짐
+SMOOTHING_K = 20
+
+
+def _aspect_scores(rows: list[dict], weights: dict) -> dict[str, float]:
+    """
+    제품별 aspect 점수 = Σ weight × z(평활화된 긍정률)
+
+    이전 방식(긍정률 × 언급수/리뷰수 × 가중치)의 문제:
+      리뷰 하나에 속성을 많이 언급하는 제품(풀리: 리뷰당 4.75개, 중앙값 2.53개)이
+      모든 속성 점수가 부풀려져 어떤 질문이든 1위가 됨
+    현재 방식:
+      - 언급 수는 '신뢰도'로만 사용 (베이지안 평활화) → 수다스러운 리뷰가 점수를 키우지 못함
+      - 속성별 z-score → 모든 제품이 긍정률 ~1.0인 속성(산뜻함)이 순위를 지배하지 못함
+    """
+    import statistics
+    smoothed: dict[str, dict[str, float]] = {}
+    for col in ASPECT_POS_COLS:
+        if weights.get(col, 0) <= 0:
+            continue
+        mention_col = col.replace("_pos", "_mention")
+        vals = [(r[col], r.get(mention_col) or 0) for r in rows if r.get(col) is not None]
+        if not vals:
+            continue
+        prior = sum(p * m for p, m in vals) / max(sum(m for _, m in vals), 1)
+        per = {}
+        for r in rows:
+            p, m = r.get(col), r.get(mention_col) or 0
+            per[r["goods_no"]] = prior if p is None else (p * m + prior * SMOOTHING_K) / (m + SMOOTHING_K)
+        mu = statistics.mean(per.values())
+        sd = statistics.pstdev(per.values()) or 1.0
+        smoothed[col] = {g: (v - mu) / sd for g, v in per.items()}
+
+    return {
+        r["goods_no"]: sum(weights[col] * z[r["goods_no"]] for col, z in smoothed.items())
+        for r in rows
+    }
+
+
+def _rank_norm(order: list[str]) -> dict[str, float]:
+    """순위 → 0~1 점수 (1위 = 1.0)"""
+    n = len(order) or 1
+    return {g: (n - i) / n for i, g in enumerate(order)}
+
+
 def search_by_product_stats(
     user_needs: list[str],
     skin_type: str,
@@ -248,112 +316,57 @@ def search_by_product_stats(
     already_recommended: list[str] | None = None,
 ) -> list[str]:
     """
-    1단계: product_stats SQL 스코어링 → 상위 제품 goods_no 반환
+    1단계: product_stats 스코어링 → 상위 제품 goods_no 반환
 
-    스코어 = aspect 가중합 (피부타입 기반)
-    skin_tone_code 있을 때:
-      - 후보 풀을 top_k × 3개로 확장
-      - 피부타입 스코어 0.6 + 피부톤 매칭 스코어 0.4 블렌딩
-    already_recommended 있을 때:
-      - 이미 추천한 제품 스코어 × 0.5 패널티 (다양성 확보)
-      - 같은 세션에서 계속 같은 제품이 추천되는 것 방지
+    1. aspect 점수 (피부타입 기본 가중치 0.15 + 사용자 니즈 0.85) → 상위 top_k × 3 후보
+    2. 신뢰도 블렌딩: aspect 순위 0.9 + (평점·리뷰수) 0.1
+       (질문과 무관한 고정값이라 동점 처리용으로만 — 0.2일 땐 리뷰 최다 제품이 순위를 뒤집음)
+    3. 피부타입 보정: 해당 제품의 주 사용 피부타입이 요청과 같으면 +0.05
+    4. 피부톤 블렌딩 (skin_tone_code 있을 때): 위 순위 0.6 + 피부톤 리뷰 비중 0.4
+    5. 이미 추천한 제품 × 0.5 패널티 (다양성 확보)
     """
-    defaults   = load_skin_type_weights()
-    weights    = calculate_weights(user_needs, skin_type, defaults)
-    # aspect_pos × mention_ratio × weight
-    # mention_ratio = mention / total_reviews
-    # → "얼마나 좋냐" × "얼마나 언급됐냐" × "피부타입 가중치"
-    # mention이 적은 aspect는 신뢰도를 낮춰서 과대평가 방지
-    score_parts = []
-    for col, w in weights.items():
-        if col not in ["fresh_pos","non_sticky_pos","moisture_pos","mild_pos",
-                       "no_whitecast_pos","no_pilling_pos","longevity_pos","no_eye_irritation_pos"]:
-            continue
-        mention_col = col.replace("_pos", "_mention")
-        # mention_ratio = mention / total_reviews (0~1)
-        # NULLIF로 total_reviews=0 방어
-        score_parts.append(
-            f"COALESCE({col}, 0.5) "
-            f"* COALESCE({mention_col}::float / NULLIF(total_reviews, 0), 0.3) "
-            f"* {w}"
-        )
-    score_expr = " + ".join(score_parts) or "0.5"
-
-    # review_summary에서 신뢰도 점수 계산 (rating 정규화 × log 리뷰수)
     import math
-    summary = load_review_summary()
-    trust_scores: dict[str, float] = {}
-    if summary:
-        # summary 구조: {goods_no: {"goods_name": ..., "metadata": {...}}}
-        metas = [v["metadata"] for v in summary.values() if isinstance(v, dict) and "metadata" in v]
-        ratings = [m["stat_rating"] for m in metas if "stat_rating" in m]
-        counts  = [m["stat_review_count"] for m in metas if "stat_review_count" in m]
-        if not ratings or not counts:
-            pass  # review_summary 없으면 trust_scores 비워두고 스킵
-        else:
-            r_min, r_max = min(ratings), max(ratings)
-            r_range   = r_max - r_min if r_max != r_min else 1.0
-            log_max   = math.log(max(counts) + 1)
-            for gno, item in summary.items():
-                meta = item.get("metadata", {}) if isinstance(item, dict) else {}
-                rating    = meta.get("stat_rating", 4.5)
-                rev_count = meta.get("stat_review_count", 0)
-            norm_rating = (rating - r_min) / r_range          # 0~1 정규화
-            norm_log    = math.log(rev_count + 1) / log_max   # 0~1 로그 정규화
-            trust_scores[gno] = round(norm_rating * 0.5 + norm_log * 0.5, 4)
 
-    sql = f"SELECT goods_no FROM product_stats ORDER BY ({score_expr}) DESC LIMIT %s"
+    weights = calculate_weights(user_needs, skin_type, load_skin_type_weights())
+
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, (top_k * 3,))  # 여유 있게 가져온 뒤 신뢰도로 재정렬
-            candidates = [row[0] for row in cur.fetchall()]
+            cur.execute("SELECT * FROM product_stats")
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        if not rows:
+            return []
 
-        if trust_scores:
-            # aspect 스코어 0.8 + 신뢰도 0.2 블렌딩
-            # (SQL 스코어는 상대 순위만 사용 → rank 기반 정규화)
-            ranked = {gno: (len(candidates) - i) / len(candidates)
-                      for i, gno in enumerate(candidates)}
-            final_scores = {
-                gno: ranked.get(gno, 0) * 0.8 + trust_scores.get(gno, 0.5) * 0.2
-                for gno in candidates
-            }
-            candidates = sorted(candidates, key=lambda g: final_scores.get(g, 0), reverse=True)
+        # ── 1. aspect 점수 → 후보 풀 ──────────────────────────────────────────
+        aspect = _aspect_scores(rows, weights)
+        candidates = sorted(aspect, key=lambda g: aspect[g], reverse=True)[: top_k * 3]
+        scores = _rank_norm(candidates)
 
-        # 3. 피부타입 분포 보정
-        # skin_type이 있을 때 stat_skin_type_top과 맞지 않는 제품은 0.1 패널티
+        # ── 2. 신뢰도 (평점 정규화 × log 리뷰수), 동점 처리용 ────────────────
+        summary = load_review_summary()
+        metas = {g: (v.get("metadata", {}) if isinstance(v, dict) else {}) for g, v in summary.items()}
+        ratings = [m["stat_rating"] for m in metas.values() if "stat_rating" in m]
+        counts  = [m["stat_review_count"] for m in metas.values() if "stat_review_count" in m]
+        if ratings and counts:
+            r_min, r_max = min(ratings), max(ratings)
+            r_range = (r_max - r_min) or 1.0
+            log_max = math.log(max(counts) + 1)
+            for g in candidates:
+                m = metas.get(g, {})
+                norm_rating = (m.get("stat_rating", 4.5) - r_min) / r_range
+                norm_log    = math.log(m.get("stat_review_count", 0) + 1) / log_max
+                trust = norm_rating * 0.5 + norm_log * 0.5
+                scores[g] = scores[g] * 0.9 + trust * 0.1
+
+        # ── 3. 피부타입 보정 ─────────────────────────────────────────────────
         skin_type_normalized = normalize_skin_type(skin_type) if skin_type else ""
-        if skin_type_normalized and summary:
-            final_scores_with_skin = {}
-            for gno in candidates:
-                base = final_scores.get(gno, ranked.get(gno, 0)) if trust_scores else ranked.get(gno, 0)
-                meta = summary.get(gno, {})
-                skin_top = meta.get("stat_skin_type_top", "")
-                # 요청 피부타입과 주 사용 피부타입 일치 시 보너스
-                if skin_top and skin_top == skin_type_normalized:
-                    final_scores_with_skin[gno] = base + 0.05
-                else:
-                    final_scores_with_skin[gno] = base
-            candidates = sorted(candidates, key=lambda g: final_scores_with_skin.get(g, 0), reverse=True)
+        if skin_type_normalized:
+            for g in candidates:
+                if metas.get(g, {}).get("stat_skin_type_top") == skin_type_normalized:
+                    scores[g] += 0.05
 
-        # ── 이미 추천한 제품 패널티 (다양성 확보) ───────────────────────────
-        if already_recommended:
-            penalized = {
-                gno: (blended.get(gno, type_scores.get(gno, 0)) * 0.5
-                      if gno in already_recommended
-                      else blended.get(gno, type_scores.get(gno, 0)))
-                for gno in candidates
-            } if skin_tone_code else {
-                gno: (final_scores.get(gno, ranked.get(gno, 0)) * 0.5
-                      if gno in already_recommended
-                      else final_scores.get(gno, ranked.get(gno, 0)))
-                for gno in candidates
-            }
-            candidates = sorted(candidates, key=lambda g: penalized.get(g, 0), reverse=True)
-
-        # ── 피부톤 블렌딩 ────────────────────────────────────────────────────
-        # skin_tone_code 있을 때: 피부타입 스코어 0.6 + 피부톤 매칭 0.4
-        # 피부톤 매칭 스코어 = 해당 제품의 피부톤 리뷰 수 / 전체 최대값
+        # ── 4. 피부톤 블렌딩 ─────────────────────────────────────────────────
         if skin_tone_code:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -363,19 +376,20 @@ def search_by_product_stats(
                     GROUP BY goods_no
                 """, (skin_tone_code, candidates))
                 tone_counts = {row[0]: row[1] for row in cur.fetchall()}
-
             max_tone = max(tone_counts.values()) if tone_counts else 1
-            # 현재 candidates 순위 기반 정규화 (피부타입 스코어 proxy)
-            type_scores = {gno: (len(candidates) - i) / len(candidates)
-                           for i, gno in enumerate(candidates)}
-            blended = {
-                gno: type_scores.get(gno, 0) * 0.6
-                     + (tone_counts.get(gno, 0) / max_tone) * 0.4
-                for gno in candidates
+            type_rank = _rank_norm(sorted(candidates, key=lambda g: scores[g], reverse=True))
+            scores = {
+                g: type_rank[g] * 0.6 + (tone_counts.get(g, 0) / max_tone) * 0.4
+                for g in candidates
             }
-            candidates = sorted(candidates, key=lambda g: blended.get(g, 0), reverse=True)
 
-        return candidates[:top_k]
+        # ── 5. 이미 추천한 제품 패널티 ───────────────────────────────────────
+        if already_recommended:
+            for g in candidates:
+                if g in already_recommended:
+                    scores[g] *= 0.5
+
+        return sorted(candidates, key=lambda g: scores[g], reverse=True)[:top_k]
     finally:
         conn.close()
 

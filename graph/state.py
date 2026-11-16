@@ -22,6 +22,7 @@ class GraphState(MessagesState):
     structured_compare_result: NotRequired[dict] # 비교 서브그래프 축별 winner/draw 결과
     compare_axes: NotRequired[list[str]] # 비교 서브 그래프 LLM이 질문에서 추출한 비교 기준 목록
     user_needs: NotRequired[list[str]]  # UserNeeds.primary → aspects 목록
+    rewritten_question: NotRequired[str]  # intake/rewrite가 만든 검색용 질문 (대화 기록에는 넣지 않음)
 
 
 
