@@ -6,9 +6,11 @@ PostgreSQL 마이그레이션
     1. products 테이블 ← review_summary.json
     2. reviews 테이블  ← oliveyoung_sunscreen_reviews.json + 임베딩 생성
     3. product_stats   ← product_stats.json
+    4. skin_type_weights ← skin_type_weights.json (테이블 없으면 생성)
 
 실행:
-    python data/migrate_to_pg.py
+    python data/migrate_to_pg.py            # 전체
+    python data/migrate_to_pg.py weights    # 피부타입 가중치만
 
 전제:
     - PostgreSQL oliveyoung DB 생성 완료
@@ -32,6 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent
 REVIEW_SUMMARY_PATH = BASE_DIR / "review_summary.json"
 REVIEWS_PATH        = BASE_DIR / "oliveyoung_sunscreen_reviews.json"
 STATS_PATH          = BASE_DIR / "product_stats.json"
+WEIGHTS_PATH        = BASE_DIR / "skin_type_weights.json"
 
 DB_CONFIG = {
     "host":     os.getenv("PG_HOST", "localhost"),
@@ -53,7 +56,7 @@ def get_conn():
 # ── 1. products 테이블 ────────────────────────────────────────────────────────
 
 def migrate_products(conn):
-    print("\n[1/3] products 테이블 마이그레이션...")
+    print("\n[1/4] products 테이블 마이그레이션...")
 
     with open(REVIEW_SUMMARY_PATH, encoding="utf-8") as f:
         summaries = json.load(f)
@@ -101,7 +104,7 @@ def migrate_products(conn):
 # ── 2. reviews 테이블 (임베딩 포함) ──────────────────────────────────────────
 
 def migrate_reviews(conn):
-    print("\n[2/3] reviews 테이블 마이그레이션 (임베딩 포함)...")
+    print("\n[2/4] reviews 테이블 마이그레이션 (임베딩 포함)...")
 
     with open(REVIEWS_PATH, encoding="utf-8") as f:
         reviews = json.load(f)
@@ -172,7 +175,7 @@ def migrate_reviews(conn):
 # ── 3. product_stats 테이블 ───────────────────────────────────────────────────
 
 def migrate_stats(conn):
-    print("\n[3/3] product_stats 테이블 마이그레이션...")
+    print("\n[3/4] product_stats 테이블 마이그레이션...")
 
     if not STATS_PATH.exists():
         print("  ⚠️  product_stats.json 없음 → analyze_aspects.py 먼저 실행하세요")
@@ -233,6 +236,45 @@ def migrate_stats(conn):
     print(f"  ✅ {len(rows)}개 제품 통계 저장 완료")
 
 
+# ── 4. skin_type_weights 테이블 ───────────────────────────────────────────────
+
+def migrate_weights(conn):
+    """skin_type_weights.json → skin_type_weights 테이블 (피부타입 × 기준 = 한 행)"""
+    print("\n[4/4] skin_type_weights 테이블 마이그레이션...")
+
+    if not WEIGHTS_PATH.exists():
+        print("  ⚠️  skin_type_weights.json 없음 → analyze_aspects.py 먼저 실행하세요")
+        return
+
+    with open(WEIGHTS_PATH, encoding="utf-8") as f:
+        weights = json.load(f)
+
+    rows = [
+        (skin_type, aspect, weight)
+        for skin_type, per_aspect in weights.items()
+        for aspect, weight in per_aspect.items()
+    ]
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS skin_type_weights (
+                skin_type  VARCHAR(10)      NOT NULL,
+                aspect     VARCHAR(40)      NOT NULL,
+                weight     DOUBLE PRECISION NOT NULL,
+                updated_at TIMESTAMP        DEFAULT NOW(),
+                PRIMARY KEY (skin_type, aspect)
+            )
+        """)
+        execute_values(cur, """
+            INSERT INTO skin_type_weights (skin_type, aspect, weight) VALUES %s
+            ON CONFLICT (skin_type, aspect) DO UPDATE SET
+                weight     = EXCLUDED.weight,
+                updated_at = NOW()
+        """, rows)
+    conn.commit()
+    print(f"  ✅ 피부타입 {len(weights)}개 × 기준 = {len(rows)}행 저장 완료")
+
+
 # ── pgvector 인덱스 재생성 ────────────────────────────────────────────────────
 
 def rebuild_index(conn):
@@ -264,6 +306,8 @@ if __name__ == "__main__":
         if mode in ("all", "stats"):
             migrate_stats(conn)
             rebuild_index(conn)
+        if mode in ("all", "weights"):
+            migrate_weights(conn)
         print("\n✅ 마이그레이션 완료")
     finally:
         conn.close()

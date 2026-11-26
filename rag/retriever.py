@@ -4,8 +4,6 @@ pgvector 기반 검색 함수
 """
 
 import os
-import json
-from pathlib import Path
 from dotenv import load_dotenv
 import psycopg2
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -18,10 +16,8 @@ PRODUCT_K  = 5
 SAMPLE_K   = 5
 
 EMBED_MODEL  = "jhgan/ko-sroberta-multitask"
-BASE_DIR            = Path(__file__).resolve().parent.parent
-WEIGHTS_PATH        = BASE_DIR / "data" / "skin_type_weights.json"
-REVIEW_SUMMARY_PATH = BASE_DIR / "data" / "review_summary.json"
-STATS_PATH          = BASE_DIR / "data" / "product_stats.json"
+# 집계 · 피부타입 가중치 · 올리브영 공식 통계는 모두 DB에서 읽음
+# (data/*.json은 분석 스크립트 산출물이자 DB 적재용 원본)
 
 SKIN_TYPE_MAP = {
     "지성":    "A01",
@@ -117,15 +113,31 @@ _REVIEW_SUMMARY_CACHE: dict | None = None
 _PRODUCT_STATS_CACHE:  dict | None = None
 
 
+def _fetch_dicts(sql: str) -> list[dict]:
+    """SELECT 결과를 [{컬럼: 값}] 으로"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def load_product_stats() -> dict:
-    """product_stats.json 로드 후 캐싱"""
+    """
+    DB product_stats 테이블 로드 후 캐싱 (추천 점수와 같은 출처)
+    반환: {goods_no: {goods_no, total_reviews, {기준}_pos, {기준}_mention, ...}}
+    """
     global _PRODUCT_STATS_CACHE
     if _PRODUCT_STATS_CACHE is None:
-        if STATS_PATH.exists():
-            _PRODUCT_STATS_CACHE = json.loads(STATS_PATH.read_text(encoding="utf-8"))
-        else:
-            _PRODUCT_STATS_CACHE = {}
-    return _PRODUCT_STATS_CACHE  # goods_no → metadata dict
+        rows = _fetch_dicts("SELECT * FROM product_stats")
+        _PRODUCT_STATS_CACHE = {
+            r["goods_no"]: {k: v for k, v in r.items() if k != "updated_at"}
+            for r in rows
+        }
+    return _PRODUCT_STATS_CACHE
 
 _SKIN_WEIGHTS_DEFAULT = {
     "지성":    {"non_sticky_pos": 0.35, "fresh_pos": 0.30, "mild_pos": 0.20, "moisture_pos": 0.15},
@@ -138,37 +150,47 @@ _SKIN_WEIGHTS_DEFAULT = {
 }
 
 def load_skin_type_weights() -> dict:
+    """
+    DB skin_type_weights 테이블 로드 후 캐싱
+    반환: {피부타입: {"{기준}_pos": 가중치}}
+    테이블이 비어 있으면 코드 안 기본값(_SKIN_WEIGHTS_DEFAULT) 사용
+    """
     global _SKIN_WEIGHTS_CACHE
     if _SKIN_WEIGHTS_CACHE is None:
-        if WEIGHTS_PATH.exists():
-            with open(WEIGHTS_PATH, encoding="utf-8") as f:
-                _SKIN_WEIGHTS_CACHE = json.load(f)
-        else:
-            _SKIN_WEIGHTS_CACHE = _SKIN_WEIGHTS_DEFAULT
+        rows = _fetch_dicts("SELECT skin_type, aspect, weight FROM skin_type_weights")
+        weights: dict = {}
+        for r in rows:
+            weights.setdefault(r["skin_type"], {})[r["aspect"]] = r["weight"]
+        _SKIN_WEIGHTS_CACHE = weights or _SKIN_WEIGHTS_DEFAULT
     return _SKIN_WEIGHTS_CACHE
+
+
+# products 테이블의 올리브영 공식 통계 컬럼 (review_summary.json의 metadata와 같은 이름)
+_OFFICIAL_STAT_COLS = [
+    "stat_rating", "stat_review_count", "stat_skin_type_top",
+    "stat_skin_oily_pct", "stat_skin_dry_pct", "stat_skin_complex_pct",
+    "spreadability_score", "mildness_score",
+]
 
 
 def load_review_summary() -> dict:
     """
-    review_summary.json 로드 후 캐싱
+    DB products 테이블(올리브영 공식 통계) 로드 후 캐싱
     반환: {goods_no: {"goods_name": str, "metadata": {...}}}
     → goods_name 포함해서 _format_insights에서 제품명 표시 가능
     """
     global _REVIEW_SUMMARY_CACHE
     if _REVIEW_SUMMARY_CACHE is None:
-        if REVIEW_SUMMARY_PATH.exists():
-            with open(REVIEW_SUMMARY_PATH, encoding="utf-8") as f:
-                raw = json.load(f)
-            _REVIEW_SUMMARY_CACHE = {
-                item["goods_no"]: {
-                    "goods_name": item.get("goods_name", ""),
-                    "metadata":   item.get("metadata", {}),
-                }
-                for item in raw
-                if item.get("goods_no")
+        rows = _fetch_dicts(
+            f"SELECT goods_no, goods_name, {', '.join(_OFFICIAL_STAT_COLS)} FROM products"
+        )
+        _REVIEW_SUMMARY_CACHE = {
+            r["goods_no"]: {
+                "goods_name": r.get("goods_name") or "",
+                "metadata":   {c: r[c] for c in _OFFICIAL_STAT_COLS if r.get(c) is not None},
             }
-        else:
-            _REVIEW_SUMMARY_CACHE = {}
+            for r in rows
+        }
     return _REVIEW_SUMMARY_CACHE
 
 def calculate_weights(user_needs: list[str], skin_type: str, defaults: dict) -> dict:

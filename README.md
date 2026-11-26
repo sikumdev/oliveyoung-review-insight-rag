@@ -92,9 +92,11 @@ analyze_aspects.py ──(LLM 분류)──► review_aspects.json      리뷰�
                                  ► skin_type_weights.json   피부타입별 속성 가중치
       │
 migrate_to_pg.py ──► PostgreSQL + pgvector
-      │                products · reviews(+embedding) · product_stats
+      │                products · reviews(+embedding) · product_stats · skin_type_weights
 add_aspect_columns.py ──► reviews 테이블에 속성 컬럼 8개 UPDATE
 ```
+
+챗봇은 실행 중에 숫자(집계 · 피부타입 가중치 · 올리브영 공식 통계)를 **DB에서만** 읽습니다. `data/*.json`은 분석 스크립트의 산출물이자 DB 적재용 원본입니다.
 
 **속성 8개**: 산뜻함 · 끈적임 없음 · 보습 · 순함 · 백탁 없음 · 밀림 없음 · 지속력 · 눈시림 없음
 
