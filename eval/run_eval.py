@@ -9,9 +9,14 @@ eval/run_eval.py
     python eval/run_eval.py --id rec_001  # 단일 케이스
 
 평가 지표:
+    [순위 평가 — 추천·엣지 15문항]
     Hit@K  : 상위 K개 중 expected 제품이 1개 이상 → 1점
     MRR    : 첫 번째 정답의 순위 역수 평균
     정확도  : Hit@1 (1위 추천이 expected에 포함)
+
+    [제품명 인식 — 비교·필터해석 5문항]
+    사용자가 쓴 제품명 → resolve_goods_no → 정답 제품 코드와 모두 일치하면 1점
+    (순위를 매기는 문항이 아니므로 Hit@K·MRR 계산에서 제외)
 """
 
 import sys
@@ -30,6 +35,7 @@ from eval.test_cases import TEST_CASES
 from rag.retriever import (
     search_by_product_stats,
     search_by_skin_tone,
+    resolve_goods_no,
     normalize_skin_type,
     SKIN_TYPE_MAP,
     SKIN_TONE_MAP,
@@ -51,9 +57,9 @@ def get_recommendation(case: dict) -> list[str]:
     skin_type_normalized = normalize_skin_type(skin_type)
     skin_tone_code       = SKIN_TONE_MAP.get(skin_tone, "")
 
-    # 비교/필터 케이스: products_mentioned 그대로 반환
-    if "비교" in category or "필터" in category:
-        return case.get("products_mentioned", [])
+    # 비교/필터 케이스: 순위가 아니라 제품명 → 제품 코드 인식 결과를 반환
+    if is_name_case(case):
+        return [resolve_goods_no(name) for name in case.get("products_mentioned", [])]
 
     # 케이스 4: 피부톤만 있음 → skin_tone 기반 검색
     if not skin_type and skin_tone:
@@ -76,6 +82,11 @@ def get_recommendation(case: dict) -> list[str]:
         skin_tone_code=skin_tone_code,
         top_k=5,
     )
+
+
+def is_name_case(case: dict) -> bool:
+    """비교·필터해석 문항 = 제품명 인식 문항"""
+    return "비교" in case["category"] or "필터" in case["category"]
 
 
 # ── 지표 계산 ──────────────────────────────────────────────────────────────
@@ -106,6 +117,26 @@ def run_eval(cases: list[dict], verbose: bool = True) -> dict:
             print(f"  ❌ [{case['id']}] 오류: {e}")
             predicted = []
 
+        if is_name_case(case):
+            ok = int(predicted == case["expected_goods_nos"])
+            results.append({
+                "id":        case["id"],
+                "category":  case["category"],
+                "query":     case["query"],
+                "kind":      "name",
+                "name_ok":   ok,
+                "input":     case.get("products_mentioned", []),
+                "predicted": predicted,
+                "expected":  case["expected_goods_nos"],
+                "desc":      case.get("description", ""),
+            })
+            if verbose:
+                print(f"  {'✅' if ok else '❌'} [{case['id']}] 제품명 인식={ok} | {case['query'][:35]}")
+                if not ok:
+                    print(f"       예상: {case['expected_goods_nos']}")
+                    print(f"       실제: {predicted}")
+            continue
+
         h1  = hit_at_k(predicted, case["expected_goods_nos"], 1)
         h3  = hit_at_k(predicted, case["expected_goods_nos"], 3)
         h5  = hit_at_k(predicted, case["expected_goods_nos"], 5)
@@ -118,6 +149,7 @@ def run_eval(cases: list[dict], verbose: bool = True) -> dict:
             "hit@1":     h1,
             "hit@3":     h3,
             "hit@5":     h5,
+            "kind":      "rank",
             "rr":        rr,
             "predicted": predicted[:3],
             "expected":  case["expected_goods_nos"],
@@ -133,17 +165,25 @@ def run_eval(cases: list[dict], verbose: bool = True) -> dict:
                 print(f"       예상: {case['expected_goods_nos'][:3]}")
                 print(f"       실제: {predicted[:3]}")
 
-    # 전체 지표
-    n = len(results)
+    # 순위 지표 (추천·엣지만)
+    ranked = [r for r in results if r["kind"] == "rank"]
+    n = len(ranked) or 1
     overall = {
-        "total":    n,
-        "hit@1":    round(sum(r["hit@1"] for r in results) / n * 100, 1),
-        "hit@3":    round(sum(r["hit@3"] for r in results) / n * 100, 1),
-        "hit@5":    round(sum(r["hit@5"] for r in results) / n * 100, 1),
-        "mrr":      round(sum(r["rr"]    for r in results) / n, 3),
+        "total":    len(ranked),
+        "hit@1":    round(sum(r["hit@1"] for r in ranked) / n * 100, 1),
+        "hit@3":    round(sum(r["hit@3"] for r in ranked) / n * 100, 1),
+        "hit@5":    round(sum(r["hit@5"] for r in ranked) / n * 100, 1),
+        "mrr":      round(sum(r["rr"]    for r in ranked) / n, 3),
     }
 
-    # 카테고리별 지표
+    # 제품명 인식 (비교·필터해석)
+    named = [r for r in results if r["kind"] == "name"]
+    name_recognition = {
+        "total":   len(named),
+        "correct": sum(r["name_ok"] for r in named),
+    }
+
+    # 카테고리별 지표 (순위 문항만)
     by_category = {}
     for cat, cat_results in category_scores.items():
         m = len(cat_results)
@@ -153,7 +193,12 @@ def run_eval(cases: list[dict], verbose: bool = True) -> dict:
             "mrr":   round(sum(r["rr"]    for r in cat_results) / m, 3),
         }
 
-    return {"overall": overall, "by_category": by_category, "results": results}
+    return {
+        "overall":          overall,
+        "name_recognition": name_recognition,
+        "by_category":      by_category,
+        "results":          results,
+    }
 
 
 # ── 결과 출력 ──────────────────────────────────────────────────────────────
@@ -163,13 +208,17 @@ def print_summary(eval_result: dict):
     print("\n" + "=" * 55)
     print("📊 평가 결과 요약")
     print("=" * 55)
-    print(f"  총 케이스:  {overall['total']}개")
+    print(f"  [순위 평가] {overall['total']}개 (추천·엣지)")
     print(f"  Hit@1:     {overall['hit@1']}%  (1위 추천 정확도)")
     print(f"  Hit@3:     {overall['hit@3']}%  (상위 3개 내 정답 포함)")
     print(f"  Hit@5:     {overall['hit@5']}%  (상위 5개 내 정답 포함)")
     print(f"  MRR:       {overall['mrr']}   (평균 역순위)")
 
-    print("\n📁 카테고리별 Hit@3:")
+    nr = eval_result.get("name_recognition", {})
+    if nr.get("total"):
+        print(f"\n  [제품명 인식] {nr['correct']}/{nr['total']}  (비교·필터해석, 순위 지표에서 제외)")
+
+    print("\n📁 카테고리별 Hit@3 (순위 문항):")
     for cat, scores in eval_result["by_category"].items():
         bar = "█" * int(scores["hit@3"] / 10) + "░" * (10 - int(scores["hit@3"] / 10))
         print(f"  {cat:<20s} {bar} {scores['hit@3']:5.1f}%  ({scores['count']}건)")

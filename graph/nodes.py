@@ -26,7 +26,10 @@ from graph.prompts import (
 from graph.subgraphs.recommend import run_recommend_subgraph
 from graph.subgraphs.compare import run_compare_subgraph
 from graph.subgraphs.filter import run_filter_subgraph
-from rag.retriever import SKIN_TYPE_MAP, load_review_summary, load_product_stats
+from rag.retriever import (
+    SKIN_TYPE_MAP, AXES_TO_ASPECT, NEEDS_TO_STAT,
+    load_review_summary, load_product_stats,
+)
 
 # ── LLM 싱글톤 (graph/llm.py에서 관리) ──────────────────────────────────────
 from graph.llm import get_llm
@@ -137,7 +140,7 @@ def ask_skin_type_node(state: GraphState) -> dict:
                 {"role": "system", "content": SKIN_TYPE_EXTRACT_SYSTEM},
                 {"role": "human",  "content": text},
             ])
-            result = response.content.strip()
+            result = response.text.strip()  # .text: content가 문자열/블록 목록 어느 쪽이어도 문자열로 (langgraph-api 0.19 서버에서 목록으로 옴)
             skin_type = result if result in valid_types else ""
 
     # 피부톤 추출
@@ -296,6 +299,14 @@ def generate_answer_node(state: GraphState) -> dict:
     existing = state.get("recommended_products", [])
     merged   = list(dict.fromkeys(existing + result.recommended))
 
+    # 질문한 기준의 숫자를 먼저 보여주기 위한 우선순위
+    #   비교: 질문에서 뽑은 비교 기준 / 추천·필터: 사용자가 말한 니즈
+    if query_type == "비교":
+        priority = [AXES_TO_ASPECT.get(ax) for ax in compare_axes]
+    else:
+        priority = [NEEDS_TO_STAT.get(n, "").replace("_pos", "") for n in state.get("user_needs", [])]
+    priority = [a for a in dict.fromkeys(priority) if a]
+
     # mention 수치 + 평점을 답변에 직접 주입
     # 비교일 때는 product_summaries에서 goods_no 추출
     if query_type == "비교" and product_summaries:
@@ -307,9 +318,11 @@ def generate_answer_node(state: GraphState) -> dict:
             if gno:
                 # product_name을 함께 저장해서 답변에서 짧은 이름으로 검색 가능하게
                 compare_insights[gno] = {"product_name": pname}
-        answer = _inject_mention_stats(result.answer, compare_insights)
+        answer = _inject_mention_stats(result.answer, compare_insights, priority)
+        if structured_result and structured_result.get("judgments"):
+            answer = _put_compare_table(answer, structured_result["judgments"], product_summaries)
     else:
-        answer = _inject_mention_stats(result.answer, review_insights)
+        answer = _inject_mention_stats(result.answer, review_insights, priority)
 
     return {
         "messages":             [AIMessage(content=answer)],
@@ -328,7 +341,7 @@ def rewrite_query_node(state: GraphState) -> dict:
     ])
     # rewrite → intake 재진입 시 skin_type/skin_tone/user_needs 보존
     return {
-        "rewritten_question": response.content.strip(),
+        "rewritten_question": response.text.strip(),
         "rewrite_count": state.get("rewrite_count", 0) + 1,
         "skin_type":     state.get("skin_type", ""),
         "skin_tone":     state.get("skin_tone", ""),
@@ -345,7 +358,7 @@ def generate_fallback_node(state: GraphState) -> dict:
         {"role": "system", "content": FALLBACK_SYSTEM},
         {"role": "human",  "content": FALLBACK_HUMAN.format(question=question)},
     ])
-    return {"messages": [AIMessage(content=response.content)]}
+    return {"messages": [AIMessage(content=response.text)]}
 
 
 # ── 헬퍼 함수 ────────────────────────────────────────────────────────────────
@@ -422,8 +435,16 @@ def _clean_product_name(name: str) -> str:
     return re.sub(r"\[.*?\]", "", name).strip()
 
 
-def _inject_mention_stats(answer: str, review_insights: dict) -> str:
-    """LLM 답변에 mention 바 차트 + 헤더 평점/리뷰수 직접 주입"""
+def _inject_mention_stats(answer: str, review_insights: dict, priority_aspects: list[str] | None = None) -> str:
+    """
+    LLM 답변에 mention 바 차트 + 헤더 평점/리뷰수 직접 주입
+
+    priority_aspects: 질문한 기준(예: ["no_pilling"]). 있으면 그 기준을 먼저 보여주고,
+                      남는 자리는 언급이 많은 기준으로 채운다.
+                      (2026-11 수정: 이전에는 항상 '가장 많이 언급된 기준'만 보여줘서
+                       "뭐가 덜 밀려?"에 산뜻함·끈적임 숫자가 붙었음)
+    """
+    priority_aspects = priority_aspects or []
     if not review_insights:
         return answer
     try:
@@ -456,8 +477,10 @@ def _inject_mention_stats(answer: str, review_insights: dict) -> str:
                 mention = s.get(asp + "_mention", 0) or 0
                 pos     = s.get(asp + "_pos")
                 if mention >= 5 and pos is not None:
-                    m_items.append((mention / total, mention, pos, kr))
-            m_items.sort(reverse=True)
+                    rank = priority_aspects.index(asp) if asp in priority_aspects else len(priority_aspects)
+                    m_items.append((rank, -mention / total, mention, pos, kr))
+            m_items.sort()  # 질문한 기준 먼저 → 그다음 언급 비율 높은 순
+            m_items = [(-neg_ratio, mention, pos, kr) for _, neg_ratio, mention, pos, kr in m_items]
             stats_block = ""
             if m_items:
                 stat_lines = []
@@ -527,6 +550,72 @@ def _inject_mention_stats(answer: str, review_insights: dict) -> str:
     except Exception:
         pass
     return answer
+
+
+COMPARE_TABLE_MARK = "[[비교표]]"
+
+
+def _build_compare_table(judgments: list, product_summaries: list) -> str:
+    """
+    비교표를 코드가 직접 그림 (2026-11 수정)
+
+    이전: LLM이 표 전체를 작성 → 칸은 리뷰 4개 요약("엇갈림")이고 판정은 DB 기준이라
+          같은 행 안에서 내용이 어긋남, 판정 근거의 숫자도 LLM이 빼먹음
+    현재: DB 기준(basis=DB 긍정률)은 칸에 '긍정률(언급 수)'을 넣고,
+          DB 컬럼이 없는 기준(향 등)만 LLM 요약문을 넣음
+    """
+    names = [s.get("product_name", "") for s in product_summaries if isinstance(s, dict)]
+    llm_cells = {}  # (product, axis) → 요약 analysis
+    for s in product_summaries:
+        if not isinstance(s, dict):
+            continue
+        for item in s.get("axes", []) or []:
+            if isinstance(item, dict):
+                llm_cells[(s.get("product_name", ""), item.get("axis", ""))] = item.get("analysis", "")
+
+    lines = [
+        "| 기준 | " + " | ".join(names) + " | 판정 |",
+        "|:----:|" + "|".join([":----:"] * len(names)) + "|------|",
+    ]
+    for j in judgments:
+        axis   = j.get("axis", "")
+        values = j.get("values") or {}
+        cells = []
+        for n in names:
+            if j.get("basis") == "DB 긍정률":
+                v = values.get(n) or {}
+                pos, mention = v.get("pos"), v.get("mention", 0)
+                cells.append(f"{int(pos * 100)}% ({mention}건)" if pos is not None and mention >= 5 else "언급 부족")
+            else:
+                text = llm_cells.get((n, axis), "")
+                cells.append(text[:20] + ("…" if len(text) > 20 else ""))
+        if j.get("draw"):
+            verdict = "🤝 무승부"
+        else:
+            verdict = f"✅ {j.get('winner', '')}"
+        lines.append(f"| {axis} | " + " | ".join(cells) + f" | {verdict} |")
+
+    basis_note = "> 숫자 = 그 기준을 언급한 리뷰 중 긍정 비율 (언급 수). 차이 5%p 미만은 무승부"
+    return "\n".join(lines) + "\n\n" + basis_note
+
+
+def _put_compare_table(answer: str, judgments: list, product_summaries: list) -> str:
+    """[[비교표]] 자리에 코드가 만든 표를 넣음. LLM이 표를 직접 썼으면 그 표를 교체"""
+    table = _build_compare_table(judgments, product_summaries)
+    if COMPARE_TABLE_MARK in answer:
+        return answer.replace(COMPARE_TABLE_MARK, table, 1)
+
+    lines = answer.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.lstrip().startswith("|")), None)
+    if start is not None:
+        end = start
+        while end < len(lines) and lines[end].lstrip().startswith("|"):
+            end += 1
+        return "\n".join(lines[:start] + [table] + lines[end:])
+
+    # 표도 자리표시도 없으면 첫 제목 바로 아래에
+    head = next((i for i, l in enumerate(lines) if l.startswith("#")), -1)
+    return "\n".join(lines[: head + 1] + ["", table, ""] + lines[head + 1:])
 
 
 def _is_contradictory(text: str, skin_type: str, skin_tone: str) -> bool:

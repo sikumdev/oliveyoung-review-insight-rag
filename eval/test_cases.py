@@ -14,6 +14,14 @@ eval/test_cases.py
     - product_stats 실제 데이터 기반으로 각 조건의 상위 제품 확인
     - 피부타입별 / user_needs별 / 피부톤별 / 멀티조건 포함
     - 총 20개 케이스
+        · 순위 평가 15개 (추천 11 + 엣지 4) → Hit@K, MRR
+        · 제품명 인식 5개 (비교 2 + 필터해석 3) → 사용자가 쓴 이름("라운드랩")을
+          제품 코드로 바르게 찾는지만 확인. 순위 지표에는 넣지 않음
+
+    2026-11 수정:
+        비교·필터 5개는 원래 products_mentioned에 정답 제품 코드를 그대로 넣어
+        평가 스크립트가 입력을 그대로 돌려주는 구조였음 → 무조건 정답(검사 효과 없음).
+        입력을 실제 사용자 표현(제품명)으로 바꾸고, 순위 지표와 분리함.
 """
 
 # ── 제품 코드 상수 ──────────────────────────────────────────────────────────
@@ -165,7 +173,7 @@ TEST_CASES = [
         "skin_type": "지성",
         "skin_tone": "",
         "user_needs": [],
-        "products_mentioned": [ROUNDLAB_MOI],
+        "products_mentioned": ["라운드랩"],
         "expected_goods_nos": [ROUNDLAB_MOI],
         "description": "지성+특정제품 필터해석",
     },
@@ -176,7 +184,7 @@ TEST_CASES = [
         "skin_type": "",
         "skin_tone": "여름쿨",
         "user_needs": [],
-        "products_mentioned": [DALBA_PURPLE],
+        "products_mentioned": ["달바 퍼플"],
         "expected_goods_nos": [DALBA_PURPLE],
         "description": "여름쿨+특정제품 필터해석",
     },
@@ -187,7 +195,7 @@ TEST_CASES = [
         "skin_type": "건성",
         "skin_tone": "",
         "user_needs": [],
-        "products_mentioned": [GUDAL],
+        "products_mentioned": ["구달"],
         "expected_goods_nos": [GUDAL],
         "description": "건성+특정제품 필터해석",
     },
@@ -200,7 +208,7 @@ TEST_CASES = [
         "skin_type": "",
         "skin_tone": "",
         "user_needs": [],
-        "products_mentioned": [DALBA_PINK, ROUNDLAB_MOI],
+        "products_mentioned": ["달바", "라운드랩"],
         "expected_goods_nos": [DALBA_PINK, ROUNDLAB_MOI],
         "description": "2개 제품 비교",
     },
@@ -211,7 +219,7 @@ TEST_CASES = [
         "skin_type": "",
         "skin_tone": "",
         "user_needs": [],
-        "products_mentioned": [ROUNDLAB_MOI, GUDAL, DOCTORG],
+        "products_mentioned": ["라운드랩", "구달", "닥터지"],
         "expected_goods_nos": [ROUNDLAB_MOI, GUDAL, DOCTORG],
         "description": "3개 제품 비교",
     },

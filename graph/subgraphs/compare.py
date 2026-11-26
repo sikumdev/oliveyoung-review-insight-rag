@@ -12,7 +12,16 @@ cmp_subgraph: 두 개 이상 제품 비교 처리
      - skin_type 필터 포함, 결과 없으면 필터 제거 fallback
   ④ 제품별 dedup → 상위 15개
   ⑤ 제품별 CompareSummaryResult structured_output
-  ⑥ StructuredCompareResult — 축별 winner/draw 판정
+  ⑥ 축별 winner/draw 판정
+     - DB 컬럼이 있는 기준(밀림·보습 등) → product_stats 긍정률로 코드가 판정 (LLM 없음)
+     - DB 컬럼이 없는 기준(향 등)만 → StructuredCompareResult로 LLM이 판정
+
+  2026-11 수정:
+    이전에는 모든 기준을 LLM이 요약문만 보고 판정했다. 요약에 쓰인 리뷰는
+    기준마다 긍정 2개 + 부정 2개로 일부러 같은 수를 뽑은 것이라, 실제 긍정률이
+    95%인 제품도 LLM 눈에는 '반반'으로 보였다.
+    (예: 비플레인 녹두 보습 95% vs 셀퓨전씨 72%인데 셀퓨전씨 승으로 판정)
+    → DB에 집계된 기준은 긍정률 숫자로 판정하고, 근거 문장에도 그 숫자를 넣는다.
 """
 
 import logging
@@ -33,6 +42,7 @@ from graph.prompts import (
 from rag.retriever import (
     SKIN_TYPE_MAP,
     AXES_TO_ASPECT,
+    load_product_stats,
     search_by_aspect,
     search_by_goods_no,
     resolve_goods_no,
@@ -45,6 +55,10 @@ from graph.llm import get_llm
 MAX_DOCS_PER_PRODUCT = 15
 POS_PER_AXIS = 2  # 속도 최적화: 3 → 2
 NEG_PER_AXIS = 2  # 정확도 유지 (부정 리뷰는 2개 유지)
+
+# DB 판정 기준
+MIN_MENTION = 5      # 화면 표시 기준과 동일: 언급 5건 미만이면 판정에 쓰지 않음
+DRAW_GAP    = 0.05   # 1·2위 긍정률 차이가 5%p 미만이면 무승부
 
 
 def run_compare_subgraph(state: GraphState) -> dict:
@@ -202,26 +216,97 @@ def run_compare_subgraph(state: GraphState) -> dict:
     # ── ⑤ 축별 winner 판정 ───────────────────────────────────────────────────
     structured_compare_result: dict = {}
     if len(product_summaries) >= 2:
-        summaries_text = _format_summaries_for_compare(product_summaries)
-        try:
-            compare_result: StructuredCompareResult = llm.with_structured_output(
-                StructuredCompareResult
-            ).invoke([
-                {"role": "system", "content": STRUCTURED_COMPARE_SYSTEM},
-                {"role": "human",  "content": STRUCTURED_COMPARE_HUMAN.format(
-                    question=query,
-                    summaries=summaries_text,
-                )},
-            ])
-            structured_compare_result = compare_result.model_dump()
-        except Exception as e:
-            logger.warning("structured_compare 실패: %s", e)
+        # DB 컬럼이 있는 기준 → 코드가 긍정률로 판정
+        db_judgments = {
+            ax: judge_axis_by_stats(ax, aspect, product_summaries)
+            for ax, aspect in axis_aspect_map.items()
+            if aspect is not None
+        }
+
+        # DB 컬럼이 없는 기준(향 등)만 LLM 판정
+        llm_axes = [ax for ax, aspect in axis_aspect_map.items() if aspect is None]
+        llm_judgments: dict[str, dict] = {}
+        if llm_axes:
+            summaries_text = _format_summaries_for_compare(product_summaries)
+            try:
+                compare_result: StructuredCompareResult = llm.with_structured_output(
+                    StructuredCompareResult
+                ).invoke([
+                    {"role": "system", "content": STRUCTURED_COMPARE_SYSTEM},
+                    {"role": "human",  "content": STRUCTURED_COMPARE_HUMAN.format(
+                        question=f"{query}\n(판정할 기준: {', '.join(llm_axes)})",
+                        summaries=summaries_text,
+                    )},
+                ])
+                for j in compare_result.model_dump()["judgments"]:
+                    if j.get("axis") in llm_axes:
+                        llm_judgments[j["axis"]] = {**j, "basis": "리뷰 요약(LLM)"}
+            except Exception as e:
+                logger.warning("structured_compare 실패: %s", e)
+
+        # 질문에서 뽑은 기준 순서 유지 (물은 기준이 첫 행)
+        judgments = []
+        for ax in axes:
+            j = db_judgments.get(ax) or llm_judgments.get(ax)
+            if j:
+                judgments.append(j)
+        structured_compare_result = {"judgments": judgments}
 
     return {
         "retrieved_docs":            all_docs,
         "product_summaries":         product_summaries,
         "compare_axes":              axes,
         "structured_compare_result": structured_compare_result,
+    }
+
+
+# ── DB 기반 판정 ─────────────────────────────────────────────────────────────
+
+def judge_axis_by_stats(axis: str, aspect: str, product_summaries: list[dict]) -> dict:
+    """
+    product_stats의 '{aspect}_pos'(긍정률)와 '{aspect}_mention'(언급 수)로 승자 판정
+
+    규칙:
+      - 언급 MIN_MENTION건 미만인 제품은 판정에서 제외
+      - 판정 가능한 제품이 2개 미만 → 무승부(데이터 부족)
+      - 1·2위 긍정률 차이 < DRAW_GAP → 무승부
+      - 그 외 → 긍정률 1위가 승자
+    reason에는 DB 숫자를 그대로 넣는다 (LLM이 숫자를 만들지 않도록)
+    values는 비교표 칸을 코드가 직접 그릴 때 쓴다 (nodes._build_compare_table)
+    """
+    stats = load_product_stats()
+    rows = []
+    for s in product_summaries:
+        name = s.get("product_name", "")
+        st   = stats.get(s.get("goods_no", ""), {})
+        rows.append((name, st.get(f"{aspect}_pos"), st.get(f"{aspect}_mention", 0) or 0))
+    values = {n: {"pos": p, "mention": m} for n, p, m in rows}
+
+    def fmt(name, pos, mention):
+        return f"{name} {int(pos * 100)}%({mention}건)"  # 막대 표시(int)와 같은 방식
+
+    usable = [(n, p, m) for n, p, m in rows if p is not None and m >= MIN_MENTION]
+    if len(usable) < 2:
+        return {
+            "axis": axis, "winner": None, "draw": True,
+            "reason": f"{axis} 언급 리뷰가 {MIN_MENTION}건 미만인 제품이 있어 판정 보류",
+            "basis": "DB 긍정률", "values": values,
+        }
+
+    usable.sort(key=lambda x: x[1], reverse=True)
+    detail = " vs ".join(fmt(*u) for u in usable)
+    (top_name, top_pos, _), (_, second_pos, _) = usable[0], usable[1]
+
+    if top_pos - second_pos < DRAW_GAP:
+        return {
+            "axis": axis, "winner": None, "draw": True,
+            "reason": f"긍정률 차이 {DRAW_GAP:.0%}p 미만 — {detail}",
+            "basis": "DB 긍정률", "values": values,
+        }
+    return {
+        "axis": axis, "winner": top_name, "draw": False,
+        "reason": f"긍정률 {detail}",
+        "basis": "DB 긍정률", "values": values,
     }
 
 
