@@ -133,10 +133,12 @@ def build_product_stats(reviews, aspects_map):
 
 
 def build_skin_type_weights(reviews, aspects_map):
+    # 수집할 때 피부타입 필터로 모은 5개만 계산한다 (crawling.py의 SKIN_TYPES와 같음).
+    # 복합건성(A06)·복합지성(A07)은 '필터 없음' 50개에 섞여 들어온 소수(48개·18개)라
+    # 가중치 근거로 쓰지 않고, 추천할 때는 calculate_weights가 복합성 가중치로 대체한다.
     SKIN_MAP = {
         "A01": "지성", "A02": "건성", "A03": "복합성",
         "A04": "민감성", "A05": "중성",
-        "A06": "복합건성", "A07": "복합지성",
     }
 
     skin_counts = defaultdict(lambda: defaultdict(int))

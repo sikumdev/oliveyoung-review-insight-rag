@@ -151,16 +151,18 @@ _SKIN_WEIGHTS_DEFAULT = {
 
 def load_skin_type_weights() -> dict:
     """
-    DB skin_type_weights 테이블 로드 후 캐싱
+    DB skin_type_weights 테이블 로드 후 캐싱 (한 행 = 피부타입 1개, 기준 8개 컬럼)
     반환: {피부타입: {"{기준}_pos": 가중치}}
+    수집한 5개 피부타입만 있음. 복합건성·복합지성은 calculate_weights가 복합성으로 대체
     테이블이 비어 있으면 코드 안 기본값(_SKIN_WEIGHTS_DEFAULT) 사용
     """
     global _SKIN_WEIGHTS_CACHE
     if _SKIN_WEIGHTS_CACHE is None:
-        rows = _fetch_dicts("SELECT skin_type, aspect, weight FROM skin_type_weights")
-        weights: dict = {}
-        for r in rows:
-            weights.setdefault(r["skin_type"], {})[r["aspect"]] = r["weight"]
+        rows = _fetch_dicts("SELECT * FROM skin_type_weights")
+        weights = {
+            r["skin_type"]: {k: v for k, v in r.items() if k.endswith("_pos")}
+            for r in rows
+        }
         _SKIN_WEIGHTS_CACHE = weights or _SKIN_WEIGHTS_DEFAULT
     return _SKIN_WEIGHTS_CACHE
 

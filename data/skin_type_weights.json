@@ -48,25 +48,5 @@
     "no_pilling_pos": 0.1171,
     "longevity_pos": 0.05,
     "no_eye_irritation_pos": 0.0425
-  },
-  "복합지성": {
-    "fresh_pos": 0.2394,
-    "non_sticky_pos": 0.2113,
-    "moisture_pos": 0.1268,
-    "mild_pos": 0.1127,
-    "no_whitecast_pos": 0.0986,
-    "no_pilling_pos": 0.1268,
-    "longevity_pos": 0.0282,
-    "no_eye_irritation_pos": 0.0563
-  },
-  "복합건성": {
-    "fresh_pos": 0.1912,
-    "non_sticky_pos": 0.1838,
-    "moisture_pos": 0.1838,
-    "mild_pos": 0.125,
-    "no_whitecast_pos": 0.0882,
-    "no_pilling_pos": 0.125,
-    "longevity_pos": 0.0368,
-    "no_eye_irritation_pos": 0.0662
   }
 }

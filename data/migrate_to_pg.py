@@ -238,8 +238,18 @@ def migrate_stats(conn):
 
 # ── 4. skin_type_weights 테이블 ───────────────────────────────────────────────
 
+WEIGHT_COLS = [
+    "fresh_pos", "non_sticky_pos", "moisture_pos", "mild_pos",
+    "no_whitecast_pos", "no_pilling_pos", "longevity_pos", "no_eye_irritation_pos",
+]
+
+
 def migrate_weights(conn):
-    """skin_type_weights.json → skin_type_weights 테이블 (피부타입 × 기준 = 한 행)"""
+    """
+    skin_type_weights.json → skin_type_weights 테이블
+    한 행 = 피부타입 1개, 기준 8개는 컬럼 (product_stats와 같은 가로 구조)
+    JSON에서 다시 만들 수 있는 파생 테이블이라 매번 지우고 새로 만든다
+    """
     print("\n[4/4] skin_type_weights 테이블 마이그레이션...")
 
     if not WEIGHTS_PATH.exists():
@@ -249,30 +259,23 @@ def migrate_weights(conn):
     with open(WEIGHTS_PATH, encoding="utf-8") as f:
         weights = json.load(f)
 
-    rows = [
-        (skin_type, aspect, weight)
-        for skin_type, per_aspect in weights.items()
-        for aspect, weight in per_aspect.items()
-    ]
+    rows = [(skin_type, *[w.get(c) for c in WEIGHT_COLS]) for skin_type, w in weights.items()]
+    col_defs = ",\n".join(f"                {c} DOUBLE PRECISION" for c in WEIGHT_COLS)
 
     with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS skin_type_weights (
-                skin_type  VARCHAR(10)      NOT NULL,
-                aspect     VARCHAR(40)      NOT NULL,
-                weight     DOUBLE PRECISION NOT NULL,
-                updated_at TIMESTAMP        DEFAULT NOW(),
-                PRIMARY KEY (skin_type, aspect)
+        cur.execute("DROP TABLE IF EXISTS skin_type_weights")
+        cur.execute(f"""
+            CREATE TABLE skin_type_weights (
+                skin_type  VARCHAR(10) PRIMARY KEY,
+{col_defs},
+                updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        execute_values(cur, """
-            INSERT INTO skin_type_weights (skin_type, aspect, weight) VALUES %s
-            ON CONFLICT (skin_type, aspect) DO UPDATE SET
-                weight     = EXCLUDED.weight,
-                updated_at = NOW()
+        execute_values(cur, f"""
+            INSERT INTO skin_type_weights (skin_type, {', '.join(WEIGHT_COLS)}) VALUES %s
         """, rows)
     conn.commit()
-    print(f"  ✅ 피부타입 {len(weights)}개 × 기준 = {len(rows)}행 저장 완료")
+    print(f"  ✅ 피부타입 {len(rows)}행 × 기준 {len(WEIGHT_COLS)}개 컬럼 저장 완료")
 
 
 # ── pgvector 인덱스 재생성 ────────────────────────────────────────────────────
